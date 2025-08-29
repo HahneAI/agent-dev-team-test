@@ -3,12 +3,18 @@ import * as Icons from 'lucide-react';
 import { SmartVisualTheme } from '../../config/industry';
 import { User } from '../../context/AuthContext';
 
+const DynamicIcon = ({ name, ...props }: { name: string } & any) => {
+  const IconComponent = Icons[name as keyof typeof Icons] || Icons.User;
+  return <IconComponent {...props} />;
+};
+
 interface MobileHamburgerMenuProps {
   isOpen: boolean;
   onClose: () => void;
   onLogoutClick: () => void;
   onFeedbackClick: () => void;
   onNotesClick: () => void;
+  onAvatarClick: () => void;
   visualConfig: SmartVisualTheme;
   theme: 'light' | 'dark';
   user: User | null;
@@ -21,6 +27,7 @@ export const MobileHamburgerMenu: React.FC<MobileHamburgerMenuProps> = ({
   onFeedbackClick,
   onNotesClick,
   visualConfig,
+  onAvatarClick,
   theme,
   user,
 }) => {
@@ -57,7 +64,7 @@ export const MobileHamburgerMenu: React.FC<MobileHamburgerMenuProps> = ({
                 color: visualConfig.colors.text.onPrimary,
               }}
             >
-              <Icons.User className="h-5 w-5" />
+              <DynamicIcon name={user?.user_icon || 'User'} className="h-5 w-5" />
             </div>
             <div>
               <p
@@ -78,6 +85,23 @@ export const MobileHamburgerMenu: React.FC<MobileHamburgerMenuProps> = ({
 
         {/* Navigation Items */}
         <nav className="flex-1 p-4 space-y-2">
+          <button
+            onClick={() => {
+              onAvatarClick();
+              onClose();
+            }}
+            className="w-full flex items-center gap-4 px-3 py-3 rounded-lg text-left transition-colors duration-200"
+            style={{
+              color: visualConfig.colors.text.primary,
+              backgroundColor: 'transparent',
+            }}
+            onMouseOver={(e) => e.currentTarget.style.backgroundColor = visualConfig.colors.background}
+            onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+          >
+            <DynamicIcon name={user?.user_icon || 'User'} className="h-5 w-5" />
+            <span className="font-medium">Change Profile Icon</span>
+          </button>
+
           <button
             onClick={() => {
               onNotesClick();

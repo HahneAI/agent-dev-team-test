@@ -5,6 +5,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import * as Icons from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { flushSync } from 'react-dom';
+import { AvatarSelectionPopup } from './ui/AvatarSelectionPopup';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -37,6 +38,8 @@ const ChatInterface = () => {
   const { theme, toggleTheme } = useTheme();
   const { user, signOut, isAdmin } = useAuth();
   const visualConfig = getSmartVisualThemeConfig(theme);
+  
+  const [showAvatarPopup, setShowAvatarPopup] = useState(false);
 
   const [showNotesPopup, setShowNotesPopup] = useState(false);
 
@@ -335,6 +338,7 @@ const ChatInterface = () => {
         onLogoutClick={handleLogout}
         onFeedbackClick={() => setShowFeedbackPopup(true)}
         onNotesClick={() => setShowNotesPopup(true)}
+        onAvatarClick={() => setShowAvatarPopup(true)}
         visualConfig={visualConfig}
         theme={theme}
         user={user}
@@ -383,7 +387,7 @@ const ChatInterface = () => {
                     color: visualConfig.colors.text.onPrimary,
                   }}
                 >
-                  <DynamicIcon name="User" className="h-4 w-4" />
+                  <DynamicIcon name={user?.user_icon || 'User'} className="h-4 w-4" />
                 </div>
                 <div>
                   <p className="font-semibold text-sm" style={{ color: visualConfig.colors.text.primary }}>
@@ -646,6 +650,11 @@ const ChatInterface = () => {
           {performanceMetrics.totalResponseTime && <div>Total: {performanceMetrics.totalResponseTime}s</div>}
         </div>
       )}
+      {/* Avatar Selection Popup */}
+      <AvatarSelectionPopup
+        isOpen={showAvatarPopup}
+        onClose={() => setShowAvatarPopup(false)}
+      />
     </div>
   );
 };
