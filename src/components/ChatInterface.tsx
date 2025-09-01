@@ -12,6 +12,7 @@ import {
     getCoreConfig,
     getTerminologyConfig,
     getSmartVisualThemeConfig,
+    getSendEffectConfig,
 } from '../config/industry';
 import { triggerSendEffect } from './ui/IndustryEffects';
 import TypingIndicator from './ui/TypingIndicator';
@@ -22,6 +23,7 @@ import { sendFeedback } from '../utils/feedback-webhook';
 import { Message } from '../types/message';
 import { MobileHamburgerMenu } from './mobile/MobileHamburgerMenu';
 import { NotesPopup } from './ui/NotesPopup';
+import { runBackendDiagnostics, logDiagnosticResults, DiagnosticResults } from '../utils/backend-diagnostics';
 
 const coreConfig = getCoreConfig();
 const terminologyConfig = getTerminologyConfig();
@@ -50,6 +52,11 @@ const ChatInterface = () => {
   });
   const [processingStartTime, setProcessingStartTime] = useState(null);
   const [showPerformancePanel, setShowPerformancePanel] = useState(false);
+  
+  // 🔧 ADMIN DIAGNOSTICS: Backend connectivity testing
+  const [diagnosticResults, setDiagnosticResults] = useState<DiagnosticResults | null>(null);
+  const [showDiagnosticPanel, setShowDiagnosticPanel] = useState(false);
+  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
 
   const generateSessionId = () => {
     if (!user) {
@@ -99,79 +106,296 @@ const ChatInterface = () => {
     signOut();
   }
 
-  // 🏢 ENTERPRISE: Enhanced sendUserMessageToMake with performance tracking
+  // 🔧 ENHANCED: Robust webhook handler with validation, timeout, and debug logging
   const sendUserMessageToMake = async (userMessageText: string) => {
-    if (!MAKE_WEBHOOK_URL) {
-      console.warn("Make.com webhook URL is not configured. Skipping message sending.");
-      return;
+    const debugPrefix = `🔗 WEBHOOK [${sessionIdRef.current.slice(-8)}]`;
+    
+    console.group(`${debugPrefix} Starting message transmission`);
+    console.log('📤 Message:', userMessageText.substring(0, 100) + (userMessageText.length > 100 ? '...' : ''));
+    
+    // STEP 1: Validate webhook URL configuration
+    if (!MAKE_WEBHOOK_URL || MAKE_WEBHOOK_URL === 'YOUR_MAKE_WEBHOOK_URL') {
+      console.error('❌ STEP 1 FAILED: Make.com webhook URL not configured');
+      console.log('🔍 Current value:', MAKE_WEBHOOK_URL || 'undefined');
+      console.groupEnd();
+      throw new Error("Webhook URL not configured - check environment variables");
+    }
+    console.log('✅ STEP 1: Webhook URL validated');
+
+    // STEP 2: Validate URL format
+    try {
+      const webhookUrl = new URL(MAKE_WEBHOOK_URL);
+      if (!webhookUrl.hostname.includes('make.com')) {
+        console.warn('⚠️ STEP 2: Webhook URL does not appear to be a Make.com URL');
+      }
+      console.log('✅ STEP 2: URL format valid -', webhookUrl.hostname);
+    } catch (urlError) {
+      console.error('❌ STEP 2 FAILED: Invalid webhook URL format');
+      console.groupEnd();
+      throw new Error("Invalid webhook URL format");
     }
 
+    // STEP 3: Validate user authentication
     if (!user) {
-      console.error("No user data available for Make.com webhook");
+      console.error('❌ STEP 3 FAILED: No user data available');
+      console.groupEnd();
       throw new Error("User not authenticated");
     }
+    console.log('✅ STEP 3: User authenticated -', {
+      name: user.first_name,
+      techId: user.tech_uuid.slice(-8),
+      betaId: user.beta_code_id
+    });
 
-    // 🏢 ENTERPRISE: Start performance tracking
+    // STEP 4: Prepare payload with validation
+    const payload = {
+      message: userMessageText,
+      timestamp: new Date().toISOString(),
+      sessionId: sessionIdRef.current,
+      source: 'TradeSphere',
+      techId: user.tech_uuid,
+      firstName: user.first_name,
+      jobTitle: user.job_title,
+      betaCodeId: user.beta_code_id
+    };
+    
+    // 🔧 CRITICAL: Validate ALL user context fields are present
+    const requiredFields = ['message', 'timestamp', 'sessionId', 'source', 'techId', 'firstName', 'jobTitle', 'betaCodeId'];
+    const missingFields = requiredFields.filter(field => !payload[field] || payload[field] === '');
+    
+    if (missingFields.length > 0) {
+      console.error('❌ STEP 4 FAILED: Missing required payload fields -', missingFields);
+      console.error('🔍 User object inspection:', {
+        userExists: !!user,
+        techId: user?.tech_uuid || 'MISSING',
+        firstName: user?.first_name || 'MISSING',
+        jobTitle: user?.job_title || 'MISSING', 
+        betaCodeId: user?.beta_code_id || 'MISSING'
+      });
+      console.groupEnd();
+      throw new Error(`Missing user context fields: ${missingFields.join(', ')}`);
+    }
+
+    // Validate payload size (Make.com has limits)
+    const payloadSize = JSON.stringify(payload).length;
+    if (payloadSize > 10000) { // 10KB limit as safety measure
+      console.warn('⚠️ STEP 4: Large payload detected -', payloadSize, 'bytes');
+    }
+    
+    // ✅ ENHANCED: Log complete payload structure for debugging
+    console.log('✅ STEP 4: Complete payload prepared -', {
+      size: `${payloadSize} bytes`,
+      fieldCount: Object.keys(payload).length,
+      fields: Object.keys(payload),
+      userContext: {
+        techId: payload.techId?.slice(-8) || 'N/A',
+        firstName: payload.firstName,
+        jobTitle: payload.jobTitle,
+        betaCodeId: payload.betaCodeId
+      },
+      messagePreview: payload.message.substring(0, 50) + (payload.message.length > 50 ? '...' : '')
+    });
+
+    // STEP 5: Performance tracking setup
     const startTime = performance.now();
     setProcessingStartTime(Date.now());
+    console.log('⏱️ STEP 5: Performance tracking started');
+
+    // STEP 6: Create abort controller for timeout handling
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.error('⏰ TIMEOUT: Webhook request exceeded 15 seconds');
+      controller.abort();
+    }, 15000); // 15 second timeout
 
     try {
+      console.log('🚀 STEP 7: Sending webhook request...');
+      
+      // 🔧 CRITICAL: Verify JSON serialization before transmission
+      let payloadJson;
+      try {
+        payloadJson = JSON.stringify(payload);
+        const parsedBack = JSON.parse(payloadJson);
+        
+        // Verify all fields survived serialization
+        const serializedFields = Object.keys(parsedBack);
+        const originalFields = Object.keys(payload);
+        
+        if (serializedFields.length !== originalFields.length) {
+          throw new Error(`Field count mismatch: ${originalFields.length} → ${serializedFields.length}`);
+        }
+        
+        console.log('✅ STEP 7.1: JSON serialization verified -', {
+          originalFields: originalFields.length,
+          serializedFields: serializedFields.length,
+          jsonSize: `${payloadJson.length} characters`
+        });
+        
+      } catch (jsonError) {
+        console.error('❌ STEP 7.1 FAILED: JSON serialization error');
+        console.error('🔍 Payload object:', payload);
+        console.error('🔥 JSON error:', jsonError.message);
+        console.groupEnd();
+        throw new Error(`Payload serialization failed: ${jsonError.message}`);
+      }
+
       const response = await fetch(MAKE_WEBHOOK_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          message: userMessageText,
-          timestamp: new Date().toISOString(),
-          sessionId: sessionIdRef.current,
-          source: 'TradeSphere',
-          techId: user.tech_uuid,
-          firstName: user.first_name,
-          jobTitle: user.job_title,
-          betaCodeId: user.beta_code_id
-        })
+        body: payloadJson, // Use pre-verified JSON string
+        signal: controller.signal
       });
 
-      // 🏢 ENTERPRISE: Track webhook performance
+      clearTimeout(timeoutId);
+      
+      // STEP 8: Response validation with detailed logging
       const webhookLatency = performance.now() - startTime;
+      console.log('📡 STEP 8: Response received -', {
+        status: response.status,
+        statusText: response.statusText,
+        latency: `${webhookLatency.toFixed(2)}ms`
+      });
+
+      // Track performance metrics
       setPerformanceMetrics(prev => ({
         ...prev,
         webhookLatency: webhookLatency.toFixed(2)
       }));
 
+      // Handle different response scenarios
       if (!response.ok) {
-        throw new Error('Failed to send message to Make.com');
+        const errorText = await response.text().catch(() => 'Unable to read error response');
+        console.error('❌ STEP 8 FAILED: Webhook returned error');
+        console.error('📄 Error details:', {
+          status: response.status,
+          statusText: response.statusText,
+          body: errorText.substring(0, 500)
+        });
+        
+        // Provide specific error messages based on status
+        let userFriendlyError = 'Failed to send message to AI service';
+        if (response.status === 404) {
+          userFriendlyError = 'Webhook URL not found - check configuration';
+        } else if (response.status === 401 || response.status === 403) {
+          userFriendlyError = 'Webhook authentication failed';
+        } else if (response.status >= 500) {
+          userFriendlyError = 'AI service temporarily unavailable';
+        }
+        
+        console.groupEnd();
+        throw new Error(userFriendlyError);
       }
       
-      console.log('✅ User message sent to Make.com successfully with user data:', {
-        techId: user.tech_uuid,
+      // STEP 9: Success logging with comprehensive details
+      console.log('✅ STEP 9: Webhook transmission successful');
+      console.log('📊 Final metrics:', {
+        techId: user.tech_uuid.slice(-8),
         firstName: user.first_name,
-        sessionId: sessionIdRef.current,
-        webhookLatency: `${webhookLatency.toFixed(2)}ms` // 🏢 ENTERPRISE: Log performance
+        sessionId: sessionIdRef.current.slice(-12),
+        webhookLatency: `${webhookLatency.toFixed(2)}ms`,
+        payloadSize: `${payloadSize} bytes`,
+        timestamp: new Date().toISOString().slice(11, 23) // Just time portion
       });
+      
+      // 🔧 CRITICAL: Log final payload confirmation for Make.com debugging
+      console.log('📤 PAYLOAD SENT TO MAKE.COM:', {
+        message: 'Payload verification - all 8 fields included',
+        actualFieldsSent: Object.keys(payload),
+        expectedFields: ['message', 'timestamp', 'sessionId', 'source', 'techId', 'firstName', 'jobTitle', 'betaCodeId'],
+        userContextIncluded: {
+          techId: !!payload.techId,
+          firstName: !!payload.firstName,
+          jobTitle: !!payload.jobTitle, 
+          betaCodeId: !!payload.betaCodeId
+        },
+        payloadJsonLength: payloadJson.length
+      });
+      
+      console.groupEnd();
 
     } catch (error) {
-      console.error('❌ Error sending user message to Make.com:', error);
-      throw error;
+      clearTimeout(timeoutId);
+      
+      // STEP 10: Comprehensive error handling
+      console.error('❌ STEP 10: Webhook transmission failed');
+      
+      if (error.name === 'AbortError') {
+        console.error('⏰ Error type: Request timeout (15s exceeded)');
+        console.groupEnd();
+        throw new Error("Request timed out - AI service may be slow");
+      } else if (error.message?.includes('fetch')) {
+        console.error('🌐 Error type: Network connectivity issue');
+        console.groupEnd();
+        throw new Error("Network error - check internet connection");
+      } else {
+        console.error('🔥 Error details:', {
+          name: error.name,
+          message: error.message,
+          stack: error.stack?.split('\n')[0] // Just first line of stack
+        });
+        console.groupEnd();
+        throw error;
+      }
     }
   };
 
-  // 🏢 ENTERPRISE: Enhanced polling with better performance
+  // 🔧 ENHANCED: Polling with comprehensive debug logging and error handling
   const pollForAiMessages = async () => {
-    if (!NETLIFY_API_URL) return;
+    const debugPrefix = `📡 POLL [${sessionIdRef.current.slice(-8)}]`;
+    
+    // Quick validation before polling
+    if (!NETLIFY_API_URL) {
+      console.warn(`${debugPrefix} Skipped - No Netlify API URL configured`);
+      return;
+    }
+    
+    const pollStart = performance.now();
+    const currentApiUrl = `/.netlify/functions/chat-messages/${sessionIdRef.current}`;
+    const sinceParam = lastPollTimeRef.current.toISOString();
+    
+    // Only log detailed info if admin or if there's been a recent user message
+    const shouldDetailLog = isAdmin || (Date.now() - (processingStartTime || 0)) < 30000;
+    
+    if (shouldDetailLog) {
+      console.log(`${debugPrefix} Starting poll`, {
+        since: sinceParam.slice(11, 23), // Just time portion
+        url: currentApiUrl.slice(-20), // Just end of URL
+      });
+    }
     
     try {
-      const currentApiUrl = `/.netlify/functions/chat-messages/${sessionIdRef.current}`;
-      const response = await fetch(`${currentApiUrl}?since=${lastPollTimeRef.current.toISOString()}`);
+      const response = await fetch(`${currentApiUrl}?since=${sinceParam}`);
+      const pollLatency = performance.now() - pollStart;
       
       if (!response.ok) {
-        throw new Error('Failed to fetch AI messages');
+        console.error(`${debugPrefix} HTTP Error -`, {
+          status: response.status,
+          statusText: response.statusText,
+          latency: `${pollLatency.toFixed(2)}ms`
+        });
+        
+        // Don't spam errors for common issues
+        if (response.status !== 404 && response.status !== 429) {
+          throw new Error(`Poll failed: ${response.status} ${response.statusText}`);
+        }
+        return;
       }
 
       const newAiMessages = await response.json();
       
+      if (shouldDetailLog) {
+        console.log(`${debugPrefix} Response -`, {
+          messages: newAiMessages.length,
+          latency: `${pollLatency.toFixed(2)}ms`,
+          status: response.status
+        });
+      }
+      
       if (newAiMessages.length > 0) {
+        console.log(`🎉 ${debugPrefix} New messages received -`, newAiMessages.length);
+        
         // 🏢 ENTERPRISE: Calculate total response time
         if (processingStartTime) {
           const totalTime = Date.now() - processingStartTime;
@@ -180,13 +404,21 @@ const ChatInterface = () => {
             totalResponseTime: (totalTime / 1000).toFixed(1)
           }));
           
-          console.log(`🏢 ENTERPRISE: Complete response in ${(totalTime / 1000).toFixed(1)}s`);
+          console.log(`⏱️ PERFORMANCE: Complete AI response in ${(totalTime / 1000).toFixed(1)}s`);
+          setProcessingStartTime(null); // Reset after completion
         }
 
-        const processedMessages = newAiMessages.map((msg: any) => ({
-          ...msg,
-          timestamp: new Date(msg.timestamp)
-        }));
+        // Validate and process messages
+        const processedMessages = newAiMessages
+          .filter((msg: any) => msg && msg.text && msg.sender) // Basic validation
+          .map((msg: any) => ({
+            ...msg,
+            timestamp: new Date(msg.timestamp || new Date())
+          }));
+
+        if (processedMessages.length !== newAiMessages.length) {
+          console.warn(`${debugPrefix} Filtered out ${newAiMessages.length - processedMessages.length} invalid messages`);
+        }
 
         setMessages(prev => {
           const existingIds = new Set(prev.map(msg => msg.id));
@@ -195,13 +427,36 @@ const ChatInterface = () => {
           if (uniqueNewMessages.length > 0) {
             setIsLoading(false);
             lastPollTimeRef.current = new Date();
+            
+            console.log(`✅ ${debugPrefix} Added ${uniqueNewMessages.length} new messages to chat`);
             return [...prev, ...uniqueNewMessages];
+          } else {
+            console.log(`🔄 ${debugPrefix} No new unique messages (${processedMessages.length} already exist)`);
+            return prev;
           }
-          return prev;
         });
+      } else {
+        // Only log no messages if we're in detailed logging mode
+        if (shouldDetailLog && pollLatency > 100) {
+          console.log(`${debugPrefix} No new messages (${pollLatency.toFixed(2)}ms)`);
+        }
       }
+      
     } catch (error) {
-      console.error('Error polling for AI messages:', error);
+      const pollLatency = performance.now() - pollStart;
+      
+      // Enhanced error logging
+      console.error(`❌ ${debugPrefix} Polling failed -`, {
+        error: error.message,
+        latency: `${pollLatency.toFixed(2)}ms`,
+        timestamp: new Date().toISOString().slice(11, 23)
+      });
+      
+      // Network connectivity check for admins
+      if (isAdmin && error.message?.includes('fetch')) {
+        console.error('🌐 ADMIN DEBUG: Network connectivity issue detected');
+        console.error('🔍 Check: Internet connection, Netlify functions, CORS settings');
+      }
     }
   };
 
@@ -336,6 +591,30 @@ const ChatInterface = () => {
     }
   };
 
+  // 🔧 ADMIN DIAGNOSTICS: Run comprehensive backend tests
+  const runSystemDiagnostics = async () => {
+    if (!isAdmin) return;
+    
+    setIsRunningDiagnostics(true);
+    console.group('🔬 ADMIN DIAGNOSTICS: Starting system health check');
+    console.log('👤 Initiated by:', user?.first_name);
+    console.log('⏰ Started at:', new Date().toISOString());
+    
+    try {
+      const results = await runBackendDiagnostics();
+      setDiagnosticResults(results);
+      logDiagnosticResults(results);
+      
+      console.log('✅ DIAGNOSTICS COMPLETE: Results saved to state');
+      console.groupEnd();
+    } catch (error) {
+      console.error('❌ DIAGNOSTICS FAILED:', error);
+      console.groupEnd();
+    } finally {
+      setIsRunningDiagnostics(false);
+    }
+  };
+
   // ORIGINAL: Exact same return structure - preserving 100% of working layout
   return (
     <div className="h-screen flex flex-col overflow-hidden transition-colors duration-500" style={{ backgroundColor: visualConfig.colors.background }}>
@@ -433,6 +712,21 @@ const ChatInterface = () => {
                   title="Toggle performance monitoring"
                 >
                   <Icons.Activity className="h-5 w-5" />
+                </button>
+              )}
+
+              {isAdmin && (
+                <button
+                  onClick={() => setShowDiagnosticPanel(!showDiagnosticPanel)}
+                  className="p-2 rounded-lg transition-all duration-200 hover:shadow-sm"
+                  style={{
+                    backgroundColor: showDiagnosticPanel ? visualConfig.colors.primary : 'transparent',
+                    color: showDiagnosticPanel ? visualConfig.colors.text.onPrimary : visualConfig.colors.text.secondary
+                  }}
+                  aria-label="Toggle diagnostic panel"
+                  title="System diagnostics and backend health"
+                >
+                  <Icons.Stethoscope className="h-5 w-5" />
                 </button>
               )}
 
@@ -655,6 +949,87 @@ const ChatInterface = () => {
           <div>🏢 PERFORMANCE</div>
           <div>Webhook: {performanceMetrics.webhookLatency}ms</div>
           {performanceMetrics.totalResponseTime && <div>Total: {performanceMetrics.totalResponseTime}s</div>}
+        </div>
+      )}
+
+      {/* 🔧 ADMIN DIAGNOSTICS: Backend health panel */}
+      {isAdmin && showDiagnosticPanel && (
+        <div className="fixed top-20 right-4 bg-black bg-opacity-90 text-white text-xs p-4 rounded-lg shadow-2xl max-w-md z-50">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold">🔬 SYSTEM DIAGNOSTICS</h3>
+            <button 
+              onClick={() => setShowDiagnosticPanel(false)}
+              className="text-gray-400 hover:text-white"
+            >
+              <Icons.X className="h-4 w-4" />
+            </button>
+          </div>
+          
+          <div className="space-y-2 mb-3">
+            <button
+              onClick={runSystemDiagnostics}
+              disabled={isRunningDiagnostics}
+              className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded text-sm font-medium transition-colors"
+            >
+              {isRunningDiagnostics ? (
+                <>
+                  <Icons.Loader2 className="h-4 w-4 inline mr-2 animate-spin" />
+                  Running Tests...
+                </>
+              ) : (
+                <>
+                  <Icons.Play className="h-4 w-4 inline mr-2" />
+                  Run Backend Tests
+                </>
+              )}
+            </button>
+          </div>
+
+          {diagnosticResults && (
+            <div className="space-y-2 text-xs">
+              <div className="border-t border-gray-600 pt-2">
+                <div className="font-semibold mb-1">🌐 Environment Variables</div>
+                <div className="text-green-400">✅ Present: {diagnosticResults.environment.present.length}</div>
+                {diagnosticResults.environment.missing.length > 0 && (
+                  <div className="text-red-400">❌ Missing: {diagnosticResults.environment.missing.length}</div>
+                )}
+              </div>
+              
+              <div className="border-t border-gray-600 pt-2">
+                <div className="font-semibold mb-1">🗄️ Supabase Database</div>
+                <div className={diagnosticResults.supabase.accessible ? 'text-green-400' : 'text-red-400'}>
+                  {diagnosticResults.supabase.accessible ? '✅ Connected' : '❌ Failed'}
+                </div>
+                {diagnosticResults.supabase.error && (
+                  <div className="text-yellow-400 text-xs">⚠️ {diagnosticResults.supabase.error}</div>
+                )}
+              </div>
+
+              <div className="border-t border-gray-600 pt-2">
+                <div className="font-semibold mb-1">🔗 Make.com Webhook</div>
+                <div className={diagnosticResults.makeWebhook.accessible ? 'text-green-400' : 'text-red-400'}>
+                  {diagnosticResults.makeWebhook.accessible ? '✅ Accessible' : '❌ Failed'}
+                </div>
+                {diagnosticResults.makeWebhook.error && (
+                  <div className="text-yellow-400 text-xs">⚠️ {diagnosticResults.makeWebhook.error}</div>
+                )}
+              </div>
+
+              <div className="border-t border-gray-600 pt-2">
+                <div className="font-semibold mb-1">⚡ Netlify Functions</div>
+                <div className={diagnosticResults.netlifyFunctions.accessible ? 'text-green-400' : 'text-red-400'}>
+                  {diagnosticResults.netlifyFunctions.accessible ? '✅ Working' : '❌ Failed'}
+                </div>
+                {diagnosticResults.netlifyFunctions.error && (
+                  <div className="text-yellow-400 text-xs">⚠️ {diagnosticResults.netlifyFunctions.error}</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="border-t border-gray-600 pt-2 mt-3 text-xs text-gray-400">
+            💡 Check browser console for detailed logs
+          </div>
         </div>
       )}
       {/* Avatar Selection Popup */}
