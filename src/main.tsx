@@ -1,4 +1,10 @@
 import { StrictMode } from 'react';
+if ('serviceWorker' in navigator) {
+    caches.keys().then(names => names.forEach(name => caches.delete(name)));
+    navigator.serviceWorker.getRegistrations().then(registrations => {
+        registrations.forEach(registration => registration.unregister());
+    });
+}
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import './index.css';
