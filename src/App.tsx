@@ -16,7 +16,7 @@ console.log('Success Color:', EnvironmentManager.getSuccessColor());
 console.log('ALL ENV:', import.meta.env);
 console.log('🟢 APP.TSX - Component mounting...');
 
-type AppState = 'loading' | 'login' | 'onboarding' | 'confirmation' | 'authenticated';
+type AppState = 'loading' | 'beta_concluded' | 'onboarding' | 'confirmation' | 'authenticated';
 type AnimationState = 'in' | 'out';
 
 function App() {
@@ -53,7 +53,7 @@ function App() {
         if (user) {
           setAppStateWithAnimation('authenticated');
         } else {
-          setAppStateWithAnimation('login');
+          setAppStateWithAnimation('beta_concluded');
         }
       }, 500); // Corresponds to the fade-out animation duration
 
@@ -123,7 +123,7 @@ function App() {
 
   const renderContent = () => {
     switch (appState) {
-      case 'login':
+      case 'beta_concluded':
         return animatedRender(<BetaLogin onValidCode={handleValidBetaCode} onExistingUser={handleExistingUserLogin} />);
 
       case 'onboarding':
