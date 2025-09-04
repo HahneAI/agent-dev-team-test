@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './context/AuthContext';
 import BetaLogin from './components/BetaLogin';
-import OnboardingForm from './components/OnboardingForm';
 import ChatInterface from './components/ChatInterface';
 import LoadingScreen from './components/ui/LoadingScreen';
 import { ThemeProvider } from './context/ThemeContext';
