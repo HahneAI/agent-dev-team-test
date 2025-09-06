@@ -16,7 +16,7 @@ Whether you're a landscaping artist, an HVAC technician, or a tech consultant, o
 - **Flexible Business Terminology**: Customize in-app language to match your industry's specific terminology (e.g., "estimate" vs. "investment," "project" vs. "engagement").
 - **Seamless Deployment**: Deploy your customized pricing tool to Netlify or Vercel with just a few clicks.
 
-## Getting Starte
+## Getting Started
 
 Ready to create your own branded pricing tool? Follow our step-by-step guides to get up and running in minutes.
 
