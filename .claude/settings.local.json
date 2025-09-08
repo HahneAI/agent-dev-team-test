@@ -5,7 +5,8 @@
       "Bash(claude mcp:*)",
       "Bash(npx tsc:*)",
       "Bash(npx --package=typescript tsc --noEmit --skipLibCheck src/components/CompanyList.tsx)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Read(//c/Users/antho/Documents/**)"
     ],
     "deny": [],
     "ask": []
